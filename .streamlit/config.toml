@@ -1,1 +1,69 @@
+[general]
+
+Disables the "Deploy" button banner that appears at the top right of the app,
+
+making the local development experience cleaner.
+
+disableWidgetDelta = true
+
+[theme]
+
+Use 'dark' or 'light'. Dark is often preferred for geospatial and technical dashboards.
+
+base="dark"
+
+Primary accent color (a modern blue/teal)
+
+primaryColor="#00AEEF"
+
+Background color for the main content area
+
+backgroundColor="#1E1E2C"
+
+Background color for sidebar and tooltips
+
+secondaryBackgroundColor="#2D2D3C"
+
+Main text color
+
+textColor="#F0F0F0"
+
+Font to use
+
+font="sans serif"
+
+[client]
+
+Set the maximum width of the main content area. Setting it to False
+
+ensures the content uses the full browser width, which is great for maps and large tables.
+
+showSidebarNavigation = false
+
+[server]
+
+Set the default port where the app will run (usually 8501, but can be specified)
+
+port = 8501
+
+Set the maximum file upload size (default is 200MB, but KMLs are usually small)
+
+maxUploadSize = 200
+
+eof
+
+---
+
+## How to Set It Up
+
+1.  **Create the Directory:** Inside your main project folder (`project-area-analyzer`), create a new folder named **`.streamlit`** (note the preceding dot).
+    ```
+    project-area-analyzer/
+    ├── app.py
+    ├── requirements.txt
+    ├── README.md
+    ├── ML/
+    │   └── classifier.py
+    └── .streamlit/          <-- NEW FOLDER
+        └── config.toml      <-- NEW FILE
 
