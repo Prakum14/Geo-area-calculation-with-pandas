@@ -1,1 +1,7 @@
-
+streamlit
+geopandas
+pandas
+shapely
+fastkml
+fiona
+pyproj
