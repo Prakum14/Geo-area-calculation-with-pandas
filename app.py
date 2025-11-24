@@ -1,140 +1,110 @@
-# -*- coding: utf-8 -*-
-#
-# Geographic Area Calculator - Core Logic Test (REVISED FOR NESTED ZIPS AND CRS FIX)
-# This version recursively searches for the .shp file AND explicitly sets the 
-# Coordinate Reference System (CRS) if the data is loaded as "naive."
-
-# 1. Installation of required libraries
-print("Installing required libraries (geopandas and dependencies)...")
-!pip install geopandas fiona pyproj --quiet
-
-import geopandas as gpd
-import pandas as pd
-import tempfile
-import zipfile
 import os
-from google.colab import files # Used for file upload in Google Colab
+import io
+import numpy as np
+import base64 # Import base64 for proper image encoding
+from PIL import Image
+from IPython.display import display, HTML
+from google.colab import files
 
-print("\nLibraries installed and imported successfully.")
+# --- 1. SETUP AND FILE UPLOAD ---
+print("1. Installing required libraries...")
+!pip install -qq folium Pillow numpy shapely
 
-# --- Core Functions from app.py ---
+# Upload the JPG map image and the JGW world file.
+print("\n2. Please upload your .jpg (map image) and .jgw (world file) now.")
+uploaded = files.upload()
 
-def process_shapefile(uploaded_zip_path):
-    """
-    Handles the uploaded ZIP file path, extracts its contents, and reads the 
-    shapefile into a GeoDataFrame. It ensures a CRS is set.
-    """
-    print(f"Processing ZIP file: {uploaded_zip_path}")
-    
-    # Create a temporary directory to extract files
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            # Unzip the file directly into the temp directory
-            with zipfile.ZipFile(uploaded_zip_path, 'r') as zip_ref:
-                zip_ref.extractall(tmpdir)
-            
-            # --- 1. ROBUST SEARCH FOR .shp FILE ---
-            shp_path = None
-            for dirpath, dirnames, filenames in os.walk(tmpdir):
-                for filename in filenames:
-                    if filename.endswith('.shp'):
-                        shp_path = os.path.join(dirpath, filename)
-                        print(f"Found shapefile at: {shp_path}")
-                        break
-                if shp_path:
-                    break 
+# --- 2. FILE IDENTIFICATION AND READING ---
+jpg_content = None
+jgw_content = None
+jpg_filename = None
 
-            if not shp_path:
-                print("Error: Could not find a .shp file inside the ZIP archive.")
-                return None
+for name, content in uploaded.items():
+    if name.lower().endswith(('.jpg', '.jpeg')):
+        jpg_content = content
+        jpg_filename = name
+    elif name.lower().endswith('.jgw'):
+        jgw_content = content
 
-            # 2. Read the shapefile
-            gdf = gpd.read_file(shp_path)
-            
-            # --- 3. FIX: Handle Naive CRS ---
-            if gdf.crs is None:
-                print("Warning: GeoDataFrame is 'naive' (missing CRS). Assuming EPSG:4326 (WGS 84).")
-                # Most global/web data is WGS 84, which is a safe assumption for unprojected data.
-                gdf.set_crs(epsg=4326, inplace=True)
-            else:
-                print(f"CRS detected: {gdf.crs}")
-            
-            print(f"Successfully loaded data with {len(gdf)} features.")
-            return gdf
-            
-        except zipfile.BadZipFile:
-            print("Error: The uploaded file is not a valid ZIP archive.")
-            return None
-        except Exception as e:
-            print(f"An unexpected error occurred during processing: {e}")
-            return None
-
-def calculate_area(gdf, granularity_col):
-    """
-    Calculates the area in square kilometers for each unique entity
-    defined by the selected granularity column.
-    """
-    print(f"\n--- Calculating areas based on the level: {granularity_col} ---")
-
-    # 1. Re-project to a metric CRS (EPSG:3857) to enable area calculation in meters
-    # This step will now succeed because we guaranteed that gdf has a CRS set (either from file or our default 4326).
-    print("Re-projecting to metric CRS (EPSG:3857) for area calculation...")
-    gdf_metric = gdf.to_crs(epsg=3857)
-    
-    # Calculate area in square meters and convert to square kilometers
-    gdf_metric['area_sq_km'] = gdf_metric.geometry.area / 10**6
-    
-    # 2. Group the results by the chosen granularity column
-    results = gdf_metric.groupby(granularity_col)['area_sq_km'].sum().reset_index()
-    
-    # 3. Format the result
-    results.columns = ['Entity Name', 'Area (sq km)']
-    results['Area (sq km)'] = results['Area (sq km)'].round(2)
-    
-    return results
-
-# --- Main Execution Block ---
-
-print("\n--- Start Execution ---\n")
-
-# Use Colab's file upload widget
-print("Please upload your zipped shapefile now.")
-try:
-    uploaded = files.upload() 
-except Exception as e:
-    print(f"Colab file upload failed: {e}. Are you sure you are running this in a Colab environment?")
-    uploaded = {}
-
-if not uploaded:
-    print("No file was uploaded or upload failed. Please upload a ZIP file containing your shapefile.")
+if not jpg_content or not jgw_content:
+    # If files are missing, raise an error to stop execution
+    raise FileNotFoundError("Error: Could not find both a .jpg and a .jgw file. Please try again.")
 else:
-    # Get the file name from the uploaded dictionary keys
-    zip_file_name = list(uploaded.keys())[0]
+    print(f"\nSuccess! JPG file '{jpg_filename}' and JGW file loaded.")
 
-    # Step 1: Process the shapefile
-    gdf_data = process_shapefile(zip_file_name)
+# --- 3. JGW PARSING AND BOUNDS CALCULATION ---
 
-    if gdf_data is not None:
+def parse_jgw(content):
+    """Parses JGW content (6 lines) into the affine transformation matrix parameters."""
+    content_str = content.decode('utf-8').strip().replace('\r\n', '\n')
+    lines = content_str.split('\n')
+    
+    if len(lines) < 6:
+        raise ValueError("JGW file must contain 6 numeric lines.")
         
-        # Step 2: Show available attribute columns for selection
-        available_columns = [col for col in gdf_data.columns if col != 'geometry']
-        print("\nAvailable Granularity Columns (Attribute Fields):")
-        print(available_columns)
+    try:
+        # JGW Standard Order: A, D, B, E, C, F
+        params = {
+            'A': float(lines[0].strip()), # Scale X
+            'D': float(lines[1].strip()), # Rotation
+            'B': float(lines[2].strip()), # Rotation
+            'E': float(lines[3].strip()), # Scale Y (usually negative)
+            'C': float(lines[4].strip()), # World X coordinate of center of top-left pixel
+            'F': float(lines[5].strip()), # World Y coordinate of center of top-left pixel
+        }
+    except ValueError as e:
+        raise ValueError(f"Could not parse numeric data from JGW file: {e}")
+        
+    return params
 
-        # Heuristic to guess a good column:
-        preferred_names = ['NAME_1', 'name', 'NAME', 'ADM1_EN', available_columns[0]]
-        test_granularity_col = next((c for c in preferred_names if c in available_columns), None)
+def pixel_to_world(x_pixel, y_pixel, params):
+    """Converts pixel coordinates to world coordinates (X_world, Y_world)."""
+    # JGW is based on the center of the pixel, so we add 0.5
+    x_adj = x_pixel + 0.5
+    y_adj = y_pixel + 0.5
+    
+    X_world = params['A'] * x_adj + params['B'] * y_adj + params['C']
+    Y_world = params['D'] * x_adj + params['E'] * y_adj + params['F']
+    
+    # Return Y (Northing/Lat) first, then X (Easting/Lng) to match Leaflet/Folium convention for coordinates
+    return Y_world, X_world
 
-        if test_granularity_col:
-            print(f"\n--- Testing Calculation with assumed Granularity: '{test_granularity_col}' ---")
-            
-            # Step 3: Perform the area calculation
-            final_results = calculate_area(gdf_data, test_granularity_col)
-            
-            # Step 4: Display the final results
-            print("\n--- Final Area Calculation Results (Top 10) ---")
-            print(final_results.head(30).to_markdown(index=False))
-            print(f"\nTotal entities calculated: {len(final_results)}")
-        else:
-            print("\nCould not find any suitable attribute columns to calculate area.")
+# Process the image and JGW data
+try:
+    img = Image.open(io.BytesIO(jpg_content))
+    image_width, image_height = img.size
+    jgw_params = parse_jgw(jgw_content)
+    
+    # Calculate the world coordinates of the four corners (0,0) and (width, height)
+    TL_Y, TL_X = pixel_to_world(0, 0, jgw_params) # Top-Left (TL)
+    BR_Y, BR_X = pixel_to_world(image_width, image_height, jgw_params) # Bottom-Right (BR)
+    
+    # Determine the actual bounding box corners for the image overlay
+    min_X = min(TL_X, BR_X)
+    max_X = max(TL_X, BR_X)
+    min_Y = min(TL_Y, BR_Y)
+    max_Y = max(TL_Y, BR_Y)
 
+    # bounds = [[min_Y, min_X], [max_Y, max_X]] -> [[min_lat, min_lng], [max_lat, max_lng]]
+    bounds = [[min_Y, min_X], [max_Y, max_X]]
+    
+    # **REVISED Base64 encoding:** Convert image bytes to standard Base64 string for the Data URL
+    img_format = img.format if img.format else 'JPEG'
+    encoded_string = base64.b64encode(jpg_content).decode('utf-8')
+    image_data_url = f'data:image/{img_format.lower()};base64,{encoded_string}'
+
+    # Store results in global variables for the next cell
+    global global_bounds, global_image_data_url, global_jgw_params
+    global_bounds = bounds
+    global_image_data_url = image_data_url
+    global_jgw_params = jgw_params
+    
+    print("\n--- Georeferencing Parameters ---")
+    print(f"Image Dimensions: {image_width} x {image_height} pixels")
+    print(f"World Bounding Box (Y/X meters): {global_bounds}")
+    print("\nPart 1 complete. Run Part 2 to display the map.")
+    
+except Exception as e:
+    print(f"\nFatal Error during processing: {e}")
+    # Raise the exception to halt execution if a fatal error occurs
+    raise
